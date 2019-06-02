@@ -1,0 +1,266 @@
+#include <linux/interrupt.h>
+#include <linux/errno.h>
+#include <linux/module.h>
+#include <linux/platform_device.h>
+#include <linux/spi/spi.h>
+#include <linux/io.h>
+#include <linux/of.h>
+
+#define DRV_NAME "spinal-lib,spi-1.0"
+
+#define SPI_CMD_WRITE (1 << 8)
+#define SPI_CMD_READ (1 << 9)
+#define SPI_CMD_SS (1 << 11)
+
+#define SPI_RSP_VALID (1 << 31)
+
+#define SPI_STATUS_CMD_INT_ENABLE = (1 << 0)
+#define SPI_STATUS_RSP_INT_ENABLE = (1 << 1)
+#define SPI_STATUS_CMD_INT_FLAG = (1 << 8)
+#define SPI_STATUS_RSP_INT_FLAG = (1 << 9)
+
+
+#define SPI_MODE_CPOL (1 << 0)
+#define SPI_MODE_CPHA (1 << 1)
+
+
+#define SPI_SPINAL_LIB_DATA        0x00
+#define SPI_SPINAL_LIB_BUFFER      0x04
+#define SPI_SPINAL_LIB_CONFIG      0x08
+#define SPI_SPINAL_LIB_INTERRUPT   0x0C
+#define SPI_SPINAL_LIB_CLK_DIVIDER 0x20
+#define SPI_SPINAL_LIB_SS_SETUP    0x24
+#define SPI_SPINAL_LIB_SS_HOLD     0x28
+#define SPI_SPINAL_LIB_SS_DISABLE  0x2C
+
+
+
+struct spi_spinal_lib {
+	void __iomem *base;
+	s32 irq;
+	u32 len;
+	u32 count;
+	u32 bytes_per_word;
+
+	/* data buffers */
+	const u8 *tx;
+	u8 *rx;
+};
+
+static inline struct spi_spinal_lib *spi_spinal_lib_to_hw(struct spi_device *sdev)
+{
+	return spi_master_get_devdata(sdev->master);
+}
+
+static u32 spi_spinal_lib_cmd_availability(struct spi_spinal_lib *hw){
+	return readl(hw->base + SPI_SPINAL_LIB_BUFFER) & 0xFFFF;
+}
+
+static u32 spi_spinal_lib_rsp_occupancy(struct spi_spinal_lib *hw){
+	return readl(hw->base + SPI_SPINAL_LIB_BUFFER) >> 16;
+}
+
+static void spi_spinal_lib_cmd(struct spi_spinal_lib *hw, u32 cmd){
+	writel(cmd, hw->base + SPI_SPINAL_LIB_DATA);
+}
+
+static u32 spi_spinal_lib_rsp(struct spi_spinal_lib *hw){
+	return readl(hw->base + SPI_SPINAL_LIB_DATA);
+}
+
+static void spi_spinal_lib_cmd_wait(struct spi_spinal_lib *hw){
+	while(spi_spinal_lib_cmd_availability(hw) == 0) cpu_relax();
+}
+
+static void spi_spinal_lib_rsp_wait(struct spi_spinal_lib *hw){
+	while(spi_spinal_lib_rsp_occupancy(hw) == 0) cpu_relax();
+}
+
+static u32 spi_spinal_lib_rsp_pull(struct spi_spinal_lib *hw){
+	u32 rsp;
+	while(((s32)(rsp = spi_spinal_lib_rsp(hw))) < 0) cpu_relax();
+	return rsp;
+}
+
+static void spi_spinal_lib_set_cs(struct spi_device *spi, bool disable)
+{
+	struct spi_spinal_lib *hw = spi_spinal_lib_to_hw(spi);
+	spi_spinal_lib_cmd_wait(hw);
+	spi_spinal_lib_cmd(hw, spi->chip_select | (disable ? 0x00 : 0x80) | SPI_CMD_SS);
+}
+
+static int spi_spinal_lib_txrx(struct spi_master *master,
+	struct spi_device *spi, struct spi_transfer *t)
+{
+	struct spi_spinal_lib *hw = spi_master_get_devdata(master);
+
+	hw->tx = t->tx_buf;
+	hw->rx = t->rx_buf;
+	hw->count = 0;
+	hw->bytes_per_word = DIV_ROUND_UP(t->bits_per_word, 8);
+	hw->len = t->len / hw->bytes_per_word;
+
+	if (hw->irq >= 0) {
+		dev_info(&master->dev, "Interrupt not implemented\n");
+		/* enable receive interrupt */
+//		hw->imr |= spi_spinal_lib_CONTROL_IRRDY_MSK;
+//		writel(hw->imr, hw->base + spi_spinal_lib_CONTROL);
+
+		/* send the first byte */
+//		spi_spinal_lib_tx_word(hw);
+	} else {
+		u32 cmd = (hw->tx ? SPI_CMD_WRITE : 0) | SPI_CMD_READ;
+		while (hw->count < hw->len) {
+			u32 rsp;
+
+			writel(cmd | hw->tx[hw->count], hw->base + SPI_SPINAL_LIB_DATA);
+			rsp = spi_spinal_lib_rsp_pull(hw);
+			if (hw->rx) hw->rx[hw->count] = rsp;
+
+			hw->count++;
+		}
+		spi_finalize_current_transfer(master);
+	}
+
+	return t->len;
+}
+
+//static irqreturn_t spi_spinal_lib_irq(int irq, void *dev)
+//{
+//	struct spi_master *master = dev;
+//	struct spi_spinal_lib *hw = spi_master_get_devdata(master);
+//
+//	spi_spinal_lib_rx_word(hw);
+//
+//	if (hw->count < hw->len) {
+//		spi_spinal_lib_tx_word(hw);
+//	} else {
+//		/* disable receive interrupt */
+//		hw->imr &= ~spi_spinal_lib_CONTROL_IRRDY_MSK;
+//		writel(hw->imr, hw->base + spi_spinal_lib_CONTROL);
+//
+//		spi_finalize_current_transfer(master);
+//	}
+//
+//	return IRQ_HANDLED;
+//}
+
+static int spi_spinal_lib_probe(struct platform_device *pdev)
+{
+	struct spi_spinal_lib *hw;
+	struct spi_master *master;
+	struct resource *res;
+	int err = -ENODEV;
+	printk("***** RAWRRRR ****");
+	dev_info(&pdev->dev, "*****      spi_spinal_lib_probe    ******\n");
+
+	master = spi_alloc_master(&pdev->dev, sizeof(struct spi_spinal_lib));
+	if (!master)
+		return err;
+
+	/* setup the master state. */
+	master->bus_num = pdev->id;
+	master->num_chipselect = 16; //TODO
+	master->mode_bits = 0; //TODO
+	master->bits_per_word_mask = SPI_BPW_RANGE_MASK(1, 8);
+	master->dev.of_node = pdev->dev.of_node;
+	master->transfer_one = spi_spinal_lib_txrx;
+	master->set_cs = spi_spinal_lib_set_cs;
+
+	hw = spi_master_get_devdata(master);
+
+	/* find and map our resources */
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	hw->base = devm_ioremap_resource(&pdev->dev, res);
+	if (IS_ERR(hw->base)) {
+		err = PTR_ERR(hw->base);
+		goto exit;
+	}
+	/* program defaults into the registers */
+	writel(0, hw->base + SPI_SPINAL_LIB_CONFIG);
+	writel(3, hw->base + SPI_SPINAL_LIB_INTERRUPT);
+	writel(3, hw->base + SPI_SPINAL_LIB_CLK_DIVIDER);
+	writel(3, hw->base + SPI_SPINAL_LIB_SS_DISABLE);
+	writel(3, hw->base + SPI_SPINAL_LIB_SS_SETUP);
+	writel(3, hw->base + SPI_SPINAL_LIB_SS_HOLD);
+	while(spi_spinal_lib_rsp_occupancy(hw)) spi_spinal_lib_rsp(hw); //Flush rsp
+
+	/* irq is optional */
+	hw->irq = platform_get_irq(pdev, 0);
+	if (hw->irq >= 0) {
+//		err = devm_request_irq(&pdev->dev, hw->irq, spi_spinal_lib_irq, 0,
+//				       pdev->name, master);
+//		if (err)
+//			goto exit;
+		dev_info(&pdev->dev, "Interrupt not supported %d\n", hw->irq);
+		goto exit;
+	}
+
+	dev_info(&pdev->dev, "*****     A1    ******\n");
+	err = devm_spi_register_master(&pdev->dev, master);
+	dev_info(&pdev->dev, "*****      A2    ******\n");
+	if (err)
+		goto exit;
+	dev_info(&pdev->dev, "*****      A3    ******\n");
+	dev_info(&pdev->dev, "base %p, irq %d\n", hw->base, hw->irq);
+
+	return 0;
+exit:
+	spi_master_put(master);
+	return err;
+}
+
+
+static const struct of_device_id spi_spinal_lib_match[] = {
+	{ .compatible = "spinal-lib,spi-1.0", },
+	{},
+};
+MODULE_DEVICE_TABLE(of, spi_spinal_lib_match);
+
+static struct platform_driver spi_spinal_lib_driver = {
+	.probe = spi_spinal_lib_probe,
+	.driver = {
+		.name = DRV_NAME,
+		.pm = NULL,
+		.of_match_table = of_match_ptr(spi_spinal_lib_match),
+	},
+	.prevent_deferred_probe = 1,
+};
+
+//
+//static struct spi_driver acacaca = {
+//	.probe = spi_spinal_lib_probe,
+//	driver = {
+//			.name = DRV_NAME,
+//			.pm = NULL,
+//			.of_match_table = of_match_ptr(spi_spinal_lib_match),
+//		},
+//};
+//
+//static int __init spi_spinal_lib_init(void)
+//{
+//	int ret;
+//
+//	printk("***** C ****\n");
+//	ret = spi_register_driver(&(acacaca));
+//	if (ret)
+//		return ret;
+//
+//	printk("***** D ****\n");
+//	ret = platform_driver_register(&spi_spinal_lib_driver);
+//	if (ret)
+//		spi_unregister_driver((&acacaca));
+//
+//	printk("***** E ****\n");
+//	return ret;
+//}
+//device_initcall(spi_spinal_lib_init);
+
+
+
+module_platform_driver(spi_spinal_lib_driver);
+
+MODULE_DESCRIPTION("spinal lib SPI driver");
+MODULE_AUTHOR("Charles Papon <charles.papon.90@gmail.com>");
+MODULE_LICENSE("GPL");
+MODULE_ALIAS("platform:" DRV_NAME);
