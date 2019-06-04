@@ -32,6 +32,7 @@
 #define SPI_SPINAL_LIB_SS_SETUP    0x24
 #define SPI_SPINAL_LIB_SS_HOLD     0x28
 #define SPI_SPINAL_LIB_SS_DISABLE  0x2C
+#define SPI_SPINAL_LIB_SS_ACTIVE_HIGH  0x30
 
 
 
@@ -41,6 +42,8 @@ struct spi_spinal_lib {
 	u32 len;
 	u32 count;
 	u32 bytes_per_word;
+	u32 ssActiveHigh;
+	u32 hz;
 
 	/* data buffers */
 	const u8 *tx;
@@ -82,23 +85,34 @@ static u32 spi_spinal_lib_rsp_pull(struct spi_spinal_lib *hw){
 	return rsp;
 }
 
-static void spi_spinal_lib_set_cs(struct spi_device *spi, bool disable)
+static void spi_spinal_lib_set_cs(struct spi_device *spi, bool high)
 {
 	struct spi_spinal_lib *hw = spi_spinal_lib_to_hw(spi);
+	spi_spinal_lib_cmd(hw, spi->chip_select | ((high != 0) ^ ((spi->mode & SPI_CS_HIGH) != 0) ? 0x00 : 0x80) | SPI_CMD_SS);
 	spi_spinal_lib_cmd_wait(hw);
-	spi_spinal_lib_cmd(hw, spi->chip_select | (disable ? 0x00 : 0x80) | SPI_CMD_SS);
+
+//	printk("CS %d %d\n",spi->chip_select, disable);
 }
 
-static int spi_spinal_lib_txrx(struct spi_master *master,
-	struct spi_device *spi, struct spi_transfer *t)
+static void spi_spinal_lib_speed(struct spi_spinal_lib *hw, u32 speed_hz){
+	u32 clk_divider = (hw->hz/speed_hz/2)-1;
+	writel(clk_divider, hw->base + SPI_SPINAL_LIB_CLK_DIVIDER);
+}
+
+static int spi_spinal_lib_txrx(struct spi_master *master, struct spi_device *spi, struct spi_transfer *t)
 {
 	struct spi_spinal_lib *hw = spi_master_get_devdata(master);
+
+
+	spi_spinal_lib_speed(hw, t->speed_hz);
 
 	hw->tx = t->tx_buf;
 	hw->rx = t->rx_buf;
 	hw->count = 0;
 	hw->bytes_per_word = DIV_ROUND_UP(t->bits_per_word, 8);
 	hw->len = t->len / hw->bytes_per_word;
+
+//	printk("txrx %d", hw->len);
 
 	if (hw->irq >= 0) {
 		dev_info(&master->dev, "Interrupt not implemented\n");
@@ -111,17 +125,20 @@ static int spi_spinal_lib_txrx(struct spi_master *master,
 	} else {
 		u32 cmd = (hw->tx ? SPI_CMD_WRITE : 0) | SPI_CMD_READ;
 		while (hw->count < hw->len) {
-			u32 rsp;
+			u32 data = hw->tx ? hw->tx[hw->count] : 0;
+//			printk("txrx %x", hw->len);
 
-			writel(cmd | hw->tx[hw->count], hw->base + SPI_SPINAL_LIB_DATA);
-			rsp = spi_spinal_lib_rsp_pull(hw);
-			if (hw->rx) hw->rx[hw->count] = rsp;
+			writel(cmd | data, hw->base + SPI_SPINAL_LIB_DATA);
+			data = spi_spinal_lib_rsp_pull(hw);
+			if (hw->rx) hw->rx[hw->count] = data;
 
 			hw->count++;
 		}
 		spi_finalize_current_transfer(master);
 	}
 
+
+//	printk(" done\n");
 	return t->len;
 }
 
@@ -145,11 +162,35 @@ static int spi_spinal_lib_txrx(struct spi_master *master,
 //	return IRQ_HANDLED;
 //}
 
+static int spi_spinal_lib_setup(struct spi_device *spi)
+{
+	struct spi_spinal_lib *hw = spi_master_get_devdata(spi->controller);
+	u32 config = 0;
+
+	if(spi->mode & SPI_CS_HIGH)
+		hw->ssActiveHigh |= 1 << spi->chip_select;
+	else
+		hw->ssActiveHigh &= ~(1 << spi->chip_select);
+
+	writel(hw->ssActiveHigh, hw->base + SPI_SPINAL_LIB_SS_ACTIVE_HIGH);
+
+	if (spi->mode & SPI_CPOL)
+		config |= SPI_MODE_CPOL;
+	if (spi->mode & SPI_CPHA)
+		config |= SPI_MODE_CPHA;
+	writel(config, hw->base + SPI_SPINAL_LIB_CONFIG);
+
+//	printk("Setup %d %d\n", hw->ssActiveHigh, config);
+	return 0;
+}
+
+
 static int spi_spinal_lib_probe(struct platform_device *pdev)
 {
 	struct spi_spinal_lib *hw;
 	struct spi_master *master;
 	struct resource *res;
+	u32 hz;
 	int err = -ENODEV;
 	printk("***** RAWRRRR ****");
 	dev_info(&pdev->dev, "*****      spi_spinal_lib_probe    ******\n");
@@ -161,13 +202,20 @@ static int spi_spinal_lib_probe(struct platform_device *pdev)
 	/* setup the master state. */
 	master->bus_num = pdev->id;
 	master->num_chipselect = 16; //TODO
-	master->mode_bits = 0; //TODO
+	master->mode_bits = SPI_CPOL | SPI_CPHA | SPI_CS_HIGH; //TODO
 	master->bits_per_word_mask = SPI_BPW_RANGE_MASK(1, 8);
 	master->dev.of_node = pdev->dev.of_node;
 	master->transfer_one = spi_spinal_lib_txrx;
 	master->set_cs = spi_spinal_lib_set_cs;
+	master->setup = spi_spinal_lib_setup;
+	hz = 100000000; //TODO
+//	hz = devm_clk_get(&pdev->dev, "hz");
+//	if (IS_ERR(hz))
+//		return PTR_ERR(hz);
+
 
 	hw = spi_master_get_devdata(master);
+	hw->hz = hz;
 
 	/* find and map our resources */
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -177,6 +225,7 @@ static int spi_spinal_lib_probe(struct platform_device *pdev)
 		goto exit;
 	}
 	/* program defaults into the registers */
+	hw->ssActiveHigh = 0;
 	writel(0, hw->base + SPI_SPINAL_LIB_CONFIG);
 	writel(3, hw->base + SPI_SPINAL_LIB_INTERRUPT);
 	writel(3, hw->base + SPI_SPINAL_LIB_CLK_DIVIDER);
@@ -226,36 +275,6 @@ static struct platform_driver spi_spinal_lib_driver = {
 	},
 	.prevent_deferred_probe = 1,
 };
-
-//
-//static struct spi_driver acacaca = {
-//	.probe = spi_spinal_lib_probe,
-//	driver = {
-//			.name = DRV_NAME,
-//			.pm = NULL,
-//			.of_match_table = of_match_ptr(spi_spinal_lib_match),
-//		},
-//};
-//
-//static int __init spi_spinal_lib_init(void)
-//{
-//	int ret;
-//
-//	printk("***** C ****\n");
-//	ret = spi_register_driver(&(acacaca));
-//	if (ret)
-//		return ret;
-//
-//	printk("***** D ****\n");
-//	ret = platform_driver_register(&spi_spinal_lib_driver);
-//	if (ret)
-//		spi_unregister_driver((&acacaca));
-//
-//	printk("***** E ****\n");
-//	return ret;
-//}
-//device_initcall(spi_spinal_lib_init);
-
 
 
 module_platform_driver(spi_spinal_lib_driver);
