@@ -192,8 +192,6 @@ static int spi_spinal_lib_probe(struct platform_device *pdev)
 	struct resource *res;
 	u32 hz;
 	int err = -ENODEV;
-	printk("***** RAWRRRR ****");
-	dev_info(&pdev->dev, "*****      spi_spinal_lib_probe    ******\n");
 
 	master = spi_alloc_master(&pdev->dev, sizeof(struct spi_spinal_lib));
 	if (!master)
@@ -233,6 +231,8 @@ static int spi_spinal_lib_probe(struct platform_device *pdev)
 	writel(3, hw->base + SPI_SPINAL_LIB_SS_SETUP);
 	writel(3, hw->base + SPI_SPINAL_LIB_SS_HOLD);
 	while(spi_spinal_lib_rsp_occupancy(hw)) spi_spinal_lib_rsp(hw); //Flush rsp
+	//TODO all chipselect disable
+
 
 	/* irq is optional */
 	hw->irq = platform_get_irq(pdev, 0);
@@ -245,12 +245,9 @@ static int spi_spinal_lib_probe(struct platform_device *pdev)
 		goto exit;
 	}
 
-	dev_info(&pdev->dev, "*****     A1    ******\n");
 	err = devm_spi_register_master(&pdev->dev, master);
-	dev_info(&pdev->dev, "*****      A2    ******\n");
 	if (err)
 		goto exit;
-	dev_info(&pdev->dev, "*****      A3    ******\n");
 	dev_info(&pdev->dev, "base %p, irq %d\n", hw->base, hw->irq);
 
 	return 0;
