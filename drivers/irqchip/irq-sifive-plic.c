@@ -115,12 +115,17 @@ static void plic_irq_disable(struct irq_data *d)
 	plic_irq_toggle(d, 0);
 }
 
+static void plic_irq_mask(struct irq_data *d) { }
+static void plic_irq_unmask(struct irq_data *d) { }
+
 static struct irq_chip plic_chip = {
 	.name		= "SiFive PLIC",
 	/*
 	 * There is no need to mask/unmask PLIC interrupts.  They are "masked"
 	 * by reading claim and "unmasked" when writing it back.
 	 */
+	.irq_mask	= plic_irq_mask,
+	.irq_unmask	= plic_irq_unmask,
 	.irq_enable	= plic_irq_enable,
 	.irq_disable	= plic_irq_disable,
 };
