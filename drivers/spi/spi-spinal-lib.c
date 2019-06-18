@@ -5,6 +5,7 @@
 #include <linux/spi/spi.h>
 #include <linux/io.h>
 #include <linux/of.h>
+#include <linux/gpio.h>
 
 #define DRV_NAME "spinal-lib,spi-1.0"
 
@@ -40,10 +41,12 @@ struct spi_spinal_lib {
 	void __iomem *base;
 	s32 irq;
 	u32 len;
-	u32 count;
+	u32 count, txCount;
 	u32 bytes_per_word;
 	u32 ssActiveHigh;
 	u32 hz;
+	u32 cmdFifoDepth;
+	u32 rspFifoDepth;
 
 	/* data buffers */
 	const u8 *tx;
@@ -109,10 +112,9 @@ static int spi_spinal_lib_txrx(struct spi_master *master, struct spi_device *spi
 	hw->tx = t->tx_buf;
 	hw->rx = t->rx_buf;
 	hw->count = 0;
+	hw->txCount = 0;
 	hw->bytes_per_word = DIV_ROUND_UP(t->bits_per_word, 8);
 	hw->len = t->len / hw->bytes_per_word;
-
-//	printk("txrx %d", hw->len);
 
 	if (hw->irq >= 0) {
 		dev_info(&master->dev, "Interrupt not implemented\n");
@@ -123,22 +125,51 @@ static int spi_spinal_lib_txrx(struct spi_master *master, struct spi_device *spi
 		/* send the first byte */
 //		spi_spinal_lib_tx_word(hw);
 	} else {
-		u32 cmd = (hw->tx ? SPI_CMD_WRITE : 0) | SPI_CMD_READ;
-		while (hw->count < hw->len) {
-			u32 data = hw->tx ? hw->tx[hw->count] : 0;
-//			printk("txrx %x", hw->len);
+		if(hw->cmdFifoDepth > 1 && hw->rspFifoDepth > 1){
+			u32 cmd = SPI_CMD_WRITE | SPI_CMD_READ;
+			while (hw->count < hw->len) {
+				{	//rsp
+					u32 burst;
+					u8 *ptr, *end;
 
-			writel(cmd | data, hw->base + SPI_SPINAL_LIB_DATA);
-			data = spi_spinal_lib_rsp_pull(hw);
-			if (hw->rx) hw->rx[hw->count] = data;
+					burst = spi_spinal_lib_rsp_occupancy(hw);
+					ptr = hw->rx + hw->count;
+					end = ptr + burst;
+					if(hw->rx) {while(ptr != end) {*ptr++ = spi_spinal_lib_rsp(hw);}}
+					else	   {while(ptr != end) { ptr++;  spi_spinal_lib_rsp(hw);}}
+					hw->count += burst;
+				}
 
-			hw->count++;
+				{	//cmd
+					u32 burst;
+					const u8 *ptr, *end;
+					u32 cmdAvailability = spi_spinal_lib_cmd_availability(hw);
+					u32 cmdOccupancy = hw->cmdFifoDepth - cmdAvailability;
+					u32 rxAvailability = hw->rspFifoDepth - spi_spinal_lib_rsp_occupancy(hw);
+					burst = min(hw->len - hw->txCount, min(cmdAvailability, rxAvailability - cmdOccupancy));
+					ptr = hw->tx + hw->txCount;
+					end = ptr + burst;
+					if(hw->tx) {while(ptr != end) {writel(cmd | *ptr++, hw->base + SPI_SPINAL_LIB_DATA);}}
+					else	   {while(ptr != end) {ptr++; writel(cmd, hw->base + SPI_SPINAL_LIB_DATA);}}
+					hw->txCount += burst;
+				}
+			}
+		} else {
+			u32 cmd = (hw->tx ? SPI_CMD_WRITE : 0) | SPI_CMD_READ;
+			while (hw->count < hw->len) {
+				u32 data = hw->tx ? hw->tx[hw->count] : 0;
+				writel(cmd | data, hw->base + SPI_SPINAL_LIB_DATA);
+				data = spi_spinal_lib_rsp_pull(hw);
+				if (hw->rx) hw->rx[hw->count] = data;
+
+				hw->count++;
+			}
 		}
+
 		spi_finalize_current_transfer(master);
 	}
 
 
-//	printk(" done\n");
 	return t->len;
 }
 
@@ -167,18 +198,23 @@ static int spi_spinal_lib_setup(struct spi_device *spi)
 	struct spi_spinal_lib *hw = spi_master_get_devdata(spi->controller);
 	u32 config = 0;
 
-	if(spi->mode & SPI_CS_HIGH)
-		hw->ssActiveHigh |= 1 << spi->chip_select;
-	else
-		hw->ssActiveHigh &= ~(1 << spi->chip_select);
+	if (gpio_is_valid(spi->cs_gpio)){
+		gpio_direction_output(spi->cs_gpio, spi->mode & SPI_CS_HIGH ? 0 : 1);
+	} else {
+		if(spi->mode & SPI_CS_HIGH)
+			hw->ssActiveHigh |= 1 << spi->chip_select;
+		else
+			hw->ssActiveHigh &= ~(1 << spi->chip_select);
+		writel(hw->ssActiveHigh, hw->base + SPI_SPINAL_LIB_SS_ACTIVE_HIGH);
+	}
 
-	writel(hw->ssActiveHigh, hw->base + SPI_SPINAL_LIB_SS_ACTIVE_HIGH);
 
 	if (spi->mode & SPI_CPOL)
 		config |= SPI_MODE_CPOL;
 	if (spi->mode & SPI_CPHA)
 		config |= SPI_MODE_CPHA;
 	writel(config, hw->base + SPI_SPINAL_LIB_CONFIG);
+
 
 //	printk("Setup %d %d\n", hw->ssActiveHigh, config);
 	return 0;
@@ -200,7 +236,7 @@ static int spi_spinal_lib_probe(struct platform_device *pdev)
 	/* setup the master state. */
 	master->bus_num = pdev->id;
 	master->num_chipselect = 16; //TODO
-	master->mode_bits = SPI_CPOL | SPI_CPHA | SPI_CS_HIGH; //TODO
+	master->mode_bits = SPI_CPOL | SPI_CPHA | SPI_CS_HIGH;
 	master->bits_per_word_mask = SPI_BPW_RANGE_MASK(1, 8);
 	master->dev.of_node = pdev->dev.of_node;
 	master->transfer_one = spi_spinal_lib_txrx;
@@ -214,6 +250,14 @@ static int spi_spinal_lib_probe(struct platform_device *pdev)
 
 	hw = spi_master_get_devdata(master);
 	hw->hz = hz;
+	if(of_property_read_u32(pdev->dev.of_node, "rsp_fifo_depth", &hw->rspFifoDepth)){
+		dev_info(&pdev->dev, "Missing rsp_fifo_depth in DTS\n");
+		goto exit;
+	}
+	if(of_property_read_u32(pdev->dev.of_node, "cmd_fifo_depth", &hw->cmdFifoDepth)){
+		dev_info(&pdev->dev, "Missing cmd_fifo_depth in DTS\n");
+		goto exit;
+	}
 
 	/* find and map our resources */
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -232,6 +276,25 @@ static int spi_spinal_lib_probe(struct platform_device *pdev)
 	writel(3, hw->base + SPI_SPINAL_LIB_SS_HOLD);
 	while(spi_spinal_lib_rsp_occupancy(hw)) spi_spinal_lib_rsp(hw); //Flush rsp
 	//TODO all chipselect disable
+
+
+	/* Request GPIO CS lines, if any */
+	if (master->cs_gpios) {
+		u32 i;
+		for (i = 0; i < master->num_chipselect; i++) {
+			if (!gpio_is_valid(master->cs_gpios[i]))
+				continue;
+
+			err = devm_gpio_request(&pdev->dev,
+						master->cs_gpios[i],
+						DRV_NAME);
+			if (err) {
+				dev_err(&pdev->dev, "Can't get CS GPIO %i\n",
+					master->cs_gpios[i]);
+				goto exit;
+			}
+		}
+	}
 
 
 	/* irq is optional */
