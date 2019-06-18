@@ -18,7 +18,6 @@
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 
-#define GPIO_MAX_NGPIO		32
 #define GPIO_INPUT		    0x0
 #define GPIO_OUTPUT			0x4
 #define GPIO_OUTPUT_ENABLE	0x8
@@ -61,6 +60,7 @@ static int spinal_lib_gpio_direction_input(struct gpio_chip *gc, unsigned offset
 	raw_spin_lock_irqsave(&chip->lock, flags);
 	spinal_lib_gpio_assign_bit(chip->base + GPIO_OUTPUT_ENABLE, offset, 0);
 	raw_spin_unlock_irqrestore(&chip->lock, flags);
+
 
 	return 0;
 }
@@ -230,9 +230,12 @@ static int spinal_lib_gpio_probe(struct platform_device *pdev)
 		return PTR_ERR(chip->base);
 	}
 
-	ngpio = of_irq_count(node);
+	if (of_property_read_u32(node, "ngpio", &ngpio))
+		ngpio = MAX_GPIO;
+
+
 	if (ngpio >= MAX_GPIO) {
-		dev_err(dev, "too many interrupts\n");
+		dev_err(dev, "too many GPIO\n");
 		return -EINVAL;
 	}
 
@@ -253,11 +256,14 @@ static int spinal_lib_gpio_probe(struct platform_device *pdev)
 		return ret;
 
 	/* Disable all GPIO interrupts before enabling parent interrupts */
+	iowrite32(0, chip->base + GPIO_OUTPUT_ENABLE);
 	iowrite32(0, chip->base + GPIO_RISE_IE);
 	iowrite32(0, chip->base + GPIO_FALL_IE);
 	iowrite32(0, chip->base + GPIO_HIGH_IE);
 	iowrite32(0, chip->base + GPIO_LOW_IE);
 	chip->enabled = 0;
+
+
 
 	ret = gpiochip_irqchip_add(&chip->gc, &spinal_lib_gpio_irqchip, 0, handle_simple_irq, IRQ_TYPE_NONE);
 	if (ret) {
@@ -272,12 +278,6 @@ static int spinal_lib_gpio_probe(struct platform_device *pdev)
 
 	for (gpio = 0; gpio < ngpio; ++gpio) {
 		irq = platform_get_irq(pdev, gpio);
-		if (irq < 0) {
-			dev_err(dev, "invalid IRQ\n");
-			gpiochip_remove(&chip->gc);
-			return -ENODEV;
-		}
-
 		chip->irq_parent[gpio] = irq;
 		chip->self_ptr[gpio] = chip;
 		chip->trigger[gpio] = IRQ_TYPE_LEVEL_HIGH;
@@ -285,12 +285,15 @@ static int spinal_lib_gpio_probe(struct platform_device *pdev)
 
 	for (gpio = 0; gpio < ngpio; ++gpio) {
 		irq = chip->irq_parent[gpio];
+		if(irq < 0) continue;
+//		if (gpio > 1) continue;
+
 		irq_set_chained_handler_and_data(irq, spinal_lib_gpio_irq_handler, &chip->self_ptr[gpio]);
 		irq_set_parent(irq_find_mapping(chip->gc.irq.domain, gpio), irq);
 	}
 
 	platform_set_drvdata(pdev, chip);
-	dev_info(dev, "SiFive GPIO chip registered %d GPIOs\n", ngpio);
+	dev_info(dev, "Spinal lib GPIO chip registered %d GPIOs\n", ngpio);
 
 	return 0;
 }
