@@ -16,6 +16,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/slab.h>
+#include <linux/interrupt.h>
 #include <linux/spinlock.h>
 
 #define GPIO_INPUT		    0x0
@@ -36,6 +37,8 @@ struct spinal_lib_gpio {
 	unsigned		trigger[MAX_GPIO];
 	unsigned int		irq_parent[MAX_GPIO];
 	struct spinal_lib_gpio	*self_ptr[MAX_GPIO];
+
+	u32 interrupt_mask;
 };
 
 static void spinal_lib_gpio_assign_bit(void __iomem *ptr, int offset, int value)
@@ -118,9 +121,8 @@ static void spinal_lib_gpio_set_ie(struct spinal_lib_gpio *chip, int offset)
 {
 	unsigned long flags;
 	unsigned trigger;
-
 	raw_spin_lock_irqsave(&chip->lock, flags);
-	trigger = (chip->enabled & BIT(offset)) ? chip->trigger[offset] : 0;
+	trigger = (chip->enabled & chip->interrupt_mask & BIT(offset)) ? chip->trigger[offset] : 0;
 	spinal_lib_gpio_assign_bit(chip->base + GPIO_RISE_IE, offset, trigger & IRQ_TYPE_EDGE_RISING);
 	spinal_lib_gpio_assign_bit(chip->base + GPIO_FALL_IE, offset, trigger & IRQ_TYPE_EDGE_FALLING);
 	spinal_lib_gpio_assign_bit(chip->base + GPIO_HIGH_IE, offset, trigger & IRQ_TYPE_LEVEL_HIGH);
@@ -142,9 +144,39 @@ static int spinal_lib_gpio_irq_set_type(struct irq_data *d, unsigned trigger)
 	return 0;
 }
 
+//static void spinal_lib_gpio_update_interrupt_enable(struct spinal_lib_gpio *chip){
+//	iowrite32(chip->irq_rise_enable & chip->interrupt_mask, chip->base + GPIO_RISE_IE);
+//	iowrite32(chip->irq_fall_enable & chip->interrupt_mask, chip->base + GPIO_FALL_IE);
+//	iowrite32(chip->irq_high_enable & chip->interrupt_mask, chip->base + GPIO_HIGH_IE);
+//	iowrite32(chip->irq_low_enable & chip->interrupt_mask, chip->base + GPIO_LOW_IE);
+//}
+
 /* chained_irq_{enter,exit} already mask the parent */
-static void spinal_lib_gpio_irq_mask(struct irq_data *d) { }
-static void spinal_lib_gpio_irq_unmask(struct irq_data *d) { }
+static void spinal_lib_gpio_irq_mask(struct irq_data *d) {
+	unsigned long flags;
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
+	struct spinal_lib_gpio *chip = gpiochip_get_data(gc);
+	int offset = irqd_to_hwirq(d) % MAX_GPIO; // must not fail
+
+	raw_spin_lock_irqsave(&chip->lock, flags);
+	chip->interrupt_mask &= ~BIT(offset);
+	raw_spin_unlock_irqrestore(&chip->lock, flags);
+
+	spinal_lib_gpio_set_ie(chip, offset);
+
+}
+static void spinal_lib_gpio_irq_unmask(struct irq_data *d) {
+	unsigned long flags;
+	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
+	struct spinal_lib_gpio *chip = gpiochip_get_data(gc);
+	int offset = irqd_to_hwirq(d) % MAX_GPIO; // must not fail
+
+	raw_spin_lock_irqsave(&chip->lock, flags);
+	chip->interrupt_mask |= BIT(offset);
+	raw_spin_unlock_irqrestore(&chip->lock, flags);
+
+	spinal_lib_gpio_set_ie(chip, offset);
+}
 
 static void spinal_lib_gpio_irq_enable(struct irq_data *d)
 {
@@ -261,11 +293,12 @@ static int spinal_lib_gpio_probe(struct platform_device *pdev)
 	iowrite32(0, chip->base + GPIO_FALL_IE);
 	iowrite32(0, chip->base + GPIO_HIGH_IE);
 	iowrite32(0, chip->base + GPIO_LOW_IE);
+	chip->interrupt_mask = 0xFFFFFFFF;
 	chip->enabled = 0;
 
 
 
-	ret = gpiochip_irqchip_add(&chip->gc, &spinal_lib_gpio_irqchip, 0, handle_simple_irq, IRQ_TYPE_NONE);
+	ret = gpiochip_irqchip_add(&chip->gc, &spinal_lib_gpio_irqchip, 0, handle_level_irq, IRQ_TYPE_NONE);
 	if (ret) {
 		dev_err(dev, "could not add irqchip\n");
 		gpiochip_remove(&chip->gc);
@@ -280,7 +313,7 @@ static int spinal_lib_gpio_probe(struct platform_device *pdev)
 		irq = platform_get_irq(pdev, gpio);
 		chip->irq_parent[gpio] = irq;
 		chip->self_ptr[gpio] = chip;
-		chip->trigger[gpio] = IRQ_TYPE_LEVEL_HIGH;
+		chip->trigger[gpio] = IRQ_TYPE_NONE;
 	}
 
 	for (gpio = 0; gpio < ngpio; ++gpio) {
