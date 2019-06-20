@@ -146,7 +146,8 @@ static int spi_spinal_lib_txrx(struct spi_master *master, struct spi_device *spi
 					u32 cmdAvailability = spi_spinal_lib_cmd_availability(hw);
 					u32 cmdOccupancy = hw->cmdFifoDepth - cmdAvailability;
 					u32 rxAvailability = hw->rspFifoDepth - spi_spinal_lib_rsp_occupancy(hw);
-					burst = min(hw->len - hw->txCount, min(cmdAvailability, rxAvailability - cmdOccupancy));
+					u32 cmdMax = rxAvailability < cmdOccupancy ? 0 : rxAvailability - cmdOccupancy;
+					burst = min(hw->len - hw->txCount, min(cmdAvailability, cmdMax));
 					ptr = hw->tx + hw->txCount;
 					end = ptr + burst;
 					if(hw->tx) {while(ptr != end) {writel(cmd | *ptr++, hw->base + SPI_SPINAL_LIB_DATA);}}
