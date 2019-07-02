@@ -127,6 +127,7 @@ static int spi_spinal_lib_txrx(struct spi_master *master, struct spi_device *spi
 	} else {
 		if(hw->cmdFifoDepth > 1 && hw->rspFifoDepth > 1){
 			u32 cmd = SPI_CMD_WRITE | SPI_CMD_READ;
+			u32 token = min(hw->cmdFifoDepth, hw->rspFifoDepth);
 			while (hw->count < hw->len) {
 				{	//rsp
 					u32 burst;
@@ -138,21 +139,19 @@ static int spi_spinal_lib_txrx(struct spi_master *master, struct spi_device *spi
 					if(hw->rx) {while(ptr != end) {*ptr++ = spi_spinal_lib_rsp(hw);}}
 					else	   {while(ptr != end) { ptr++;  spi_spinal_lib_rsp(hw);}}
 					hw->count += burst;
+					token += burst;
 				}
 
 				{	//cmd
 					u32 burst;
 					const u8 *ptr, *end;
-					u32 cmdAvailability = spi_spinal_lib_cmd_availability(hw);
-					u32 cmdOccupancy = hw->cmdFifoDepth - cmdAvailability;
-					u32 rxAvailability = hw->rspFifoDepth - spi_spinal_lib_rsp_occupancy(hw);
-					u32 cmdMax = rxAvailability < cmdOccupancy ? 0 : rxAvailability - cmdOccupancy;
-					burst = min(hw->len - hw->txCount, min(cmdAvailability, cmdMax));
+					burst = min(hw->len - hw->txCount, token);
 					ptr = hw->tx + hw->txCount;
 					end = ptr + burst;
 					if(hw->tx) {while(ptr != end) {writel(cmd | *ptr++, hw->base + SPI_SPINAL_LIB_DATA);}}
 					else	   {while(ptr != end) {ptr++; writel(cmd, hw->base + SPI_SPINAL_LIB_DATA);}}
 					hw->txCount += burst;
+					token -= burst;
 				}
 			}
 		} else {
