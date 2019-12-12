@@ -126,7 +126,7 @@ static int spi_spinal_lib_txrx(struct spi_master *master, struct spi_device *spi
 //		spi_spinal_lib_tx_word(hw);
 	} else {
 		if(hw->cmdFifoDepth > 1 && hw->rspFifoDepth > 1){
-			u32 cmd = SPI_CMD_WRITE | SPI_CMD_READ;
+			u32 cmd = (hw->tx ? SPI_CMD_WRITE : 0) | SPI_CMD_READ;
 			u32 token = min(hw->cmdFifoDepth, hw->rspFifoDepth);
 			while (hw->count < hw->len) {
 				{	//rsp
