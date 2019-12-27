@@ -6,6 +6,7 @@
 #include <linux/io.h>
 #include <linux/of.h>
 #include <linux/gpio.h>
+#include <linux/clk.h>
 
 #define DRV_NAME "spinal-lib,spi-1.0"
 
@@ -226,6 +227,7 @@ static int spi_spinal_lib_probe(struct platform_device *pdev)
 	struct spi_spinal_lib *hw;
 	struct spi_master *master;
 	struct resource *res;
+	struct clk		*clk;
 	u32 hz;
 	int err = -ENODEV;
 
@@ -242,11 +244,16 @@ static int spi_spinal_lib_probe(struct platform_device *pdev)
 	master->transfer_one = spi_spinal_lib_txrx;
 	master->set_cs = spi_spinal_lib_set_cs;
 	master->setup = spi_spinal_lib_setup;
-	hz = 100000000; //TODO
-//	hz = devm_clk_get(&pdev->dev, "hz");
-//	if (IS_ERR(hz))
-//		return PTR_ERR(hz);
-
+	clk = devm_clk_get(&pdev->dev, NULL);
+	if (IS_ERR(clk)) {
+		dev_info(&pdev->dev, "No peripheral clock\n");
+		goto exit;
+	}
+	hz = clk_get_rate(clk);
+    if(!hz){
+		dev_info(&pdev->dev, "Bad frequancy\n");
+		goto exit;
+	}
 
 	hw = spi_master_get_devdata(master);
 	hw->hz = hz;
