@@ -101,6 +101,9 @@ static void spi_spinal_lib_set_cs(struct spi_device *spi, bool high)
 static void spi_spinal_lib_speed(struct spi_spinal_lib *hw, u32 speed_hz){
 	u32 clk_divider = (hw->hz/speed_hz/2)-1;
 	writel(clk_divider, hw->base + SPI_SPINAL_LIB_CLK_DIVIDER);
+	writel(clk_divider, hw->base + SPI_SPINAL_LIB_SS_DISABLE);
+	writel(clk_divider, hw->base + SPI_SPINAL_LIB_SS_SETUP);
+	writel(clk_divider, hw->base + SPI_SPINAL_LIB_SS_HOLD);
 }
 
 static int spi_spinal_lib_txrx(struct spi_master *master, struct spi_device *spi, struct spi_transfer *t)
