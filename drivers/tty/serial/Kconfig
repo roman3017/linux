@@ -1560,6 +1560,30 @@ config SERIAL_RDA_CONSOLE
 	  Say 'Y' here if you wish to use the RDA8810PL UART as the system
 	  console. Only earlycon is implemented currently.
 
+config SERIAL_SPINAL_LIB
+	tristate "Spinal lib UART support"
+	select SERIAL_CORE
+	help
+	  This driver supports the spinal lib UART port.
+
+config SERIAL_SPINAL_LIB_BAUDRATE
+	int "Default baudrate for spinal lib UART ports"
+	depends on SERIAL_SPINAL_LIB
+	default 115200
+	help
+	  This setting lets you define what the default baudrate is for the
+	  spinal lib UART ports. The usual default varies from board to board,
+	  and this setting is a way of catering for that.
+
+config SERIAL_SPINAL_LIB_CONSOLE
+	bool "Spinal lib UART console support"
+	depends on SERIAL_SPINAL_LIB=y
+	select SERIAL_CORE_CONSOLE
+	select SERIAL_EARLYCON
+	help
+	  Enable a spinal lib UART port to be the system console.
+
+
 endmenu
 
 config SERIAL_MCTRL_GPIO
