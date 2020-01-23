@@ -440,6 +440,20 @@ config SERIAL_21285_CONSOLE
 	  your boot loader (lilo or loadlin) about how to pass options to the
 	  kernel at boot time.)
 
+config SERIAL_MPSC
+	bool "Marvell MPSC serial port support"
+	depends on MV64X60
+	select SERIAL_CORE
+	help
+	  Say Y here if you want to use the Marvell MPSC serial controller.
+
+config SERIAL_MPSC_CONSOLE
+	bool "Support for console on Marvell MPSC serial port"
+	depends on SERIAL_MPSC
+	select SERIAL_CORE_CONSOLE
+	help
+	  Say Y here if you want to support a serial console on a Marvell MPSC.
+
 config SERIAL_PXA
 	bool "PXA serial port support (DEPRECATED)"
 	depends on ARCH_PXA || ARCH_MMP
@@ -838,6 +852,16 @@ config SERIAL_CPM_CONSOLE
 	  "console=ttyCPM0". (Try "man bootparam" or see the documentation of
 	  your boot loader (lilo or loadlin) about how to pass options to the
 	  kernel at boot time.)
+
+config SERIAL_SGI_L1_CONSOLE
+	bool "SGI Altix L1 serial console support"
+	depends on IA64_GENERIC || IA64_SGI_SN2
+	select SERIAL_CORE
+	select SERIAL_CORE_CONSOLE
+	help
+		If you have an SGI Altix and you would like to use the system
+		controller serial port as your console (you want this!),
+		say Y.  Otherwise, say N.
 
 config SERIAL_PIC32
 	tristate "Microchip PIC32 serial support"
@@ -1571,6 +1595,30 @@ config SERIAL_MILBEAUT_USIO_CONSOLE
 	  SoCs as the system console (the system console is the device which
 	  receives all kernel messages and warnings and which allows logins in
 	  single user mode).
+
+config SERIAL_SPINAL_LIB
+	tristate "Spinal lib UART support"
+	select SERIAL_CORE
+	help
+	  This driver supports the spinal lib UART port.
+
+config SERIAL_SPINAL_LIB_BAUDRATE
+	int "Default baudrate for spinal lib UART ports"
+	depends on SERIAL_SPINAL_LIB
+	default 115200
+	help
+	  This setting lets you define what the default baudrate is for the
+	  spinal lib UART ports. The usual default varies from board to board,
+	  and this setting is a way of catering for that.
+
+config SERIAL_SPINAL_LIB_CONSOLE
+	bool "Spinal lib UART console support"
+	depends on SERIAL_SPINAL_LIB=y
+	select SERIAL_CORE_CONSOLE
+	select SERIAL_EARLYCON
+	help
+	  Enable a spinal lib UART port to be the system console.
+
 
 endmenu
 
