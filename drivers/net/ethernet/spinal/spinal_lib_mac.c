@@ -77,32 +77,32 @@ struct spinal_lib_mac_priv {
 };
 
 
-static u32 spinal_lib_mac_tx_availability(struct spinal_lib_mac_priv *priv){
-    return readl(priv->base + SPINAL_LIB_MAC_TX_AVAILABILITY);
+static u32 spinal_lib_mac_tx_availability(void __iomem *base){
+    return readl(base + SPINAL_LIB_MAC_TX_AVAILABILITY);
 }
 
-static u32 spinal_lib_mac_tx_ready(struct spinal_lib_mac_priv *priv){
-    return readl(priv->base + SPINAL_LIB_MAC_CTRL) & SPINAL_LIB_MAC_CTRL_TX_READY;
+static u32 spinal_lib_mac_tx_ready(void __iomem *base){
+    return readl(base + SPINAL_LIB_MAC_CTRL) & SPINAL_LIB_MAC_CTRL_TX_READY;
 }
 
-static u32 spinal_lib_mac_rx_pending(struct spinal_lib_mac_priv *priv){
-    return readl(priv->base + SPINAL_LIB_MAC_CTRL) & SPINAL_LIB_MAC_CTRL_RX_PENDING;
+static u32 spinal_lib_mac_rx_pending(void __iomem *base){
+    return readl(base + SPINAL_LIB_MAC_CTRL) & SPINAL_LIB_MAC_CTRL_RX_PENDING;
 }
 
-static u32 spinal_lib_mac_rx_u32(struct spinal_lib_mac_priv *priv){
-    return readl(priv->base + SPINAL_LIB_MAC_RX);
+static u32 spinal_lib_mac_rx_u32(void __iomem *base){
+    return readl(base + SPINAL_LIB_MAC_RX);
 }
 
-static void spinal_lib_mac_tx_u32(struct spinal_lib_mac_priv *priv, u32 data){
-    writel(data, priv->base + SPINAL_LIB_MAC_TX);
+static void spinal_lib_mac_tx_u32(void __iomem *base, u32 data){
+    writel(data, base + SPINAL_LIB_MAC_TX);
 }
 
-static void spinal_lib_mac_reset_set(struct spinal_lib_mac_priv *priv){
-    writel(SPINAL_LIB_MAC_CTRL_TX_RESET | SPINAL_LIB_MAC_CTRL_RX_RESET | SPINAL_LIB_MAC_CTRL_TX_ALIGN | SPINAL_LIB_MAC_CTRL_RX_ALIGN, priv->base + SPINAL_LIB_MAC_CTRL);
+static void spinal_lib_mac_reset_set(void __iomem *base){
+    writel(SPINAL_LIB_MAC_CTRL_TX_RESET | SPINAL_LIB_MAC_CTRL_RX_RESET | SPINAL_LIB_MAC_CTRL_TX_ALIGN | SPINAL_LIB_MAC_CTRL_RX_ALIGN, base + SPINAL_LIB_MAC_CTRL);
 }
 
-static void spinal_lib_mac_reset_clear(struct spinal_lib_mac_priv *priv){
-    writel(SPINAL_LIB_MAC_CTRL_TX_ALIGN | SPINAL_LIB_MAC_CTRL_RX_ALIGN, priv->base + SPINAL_LIB_MAC_CTRL);
+static void spinal_lib_mac_reset_clear(void __iomem *base){
+    writel(SPINAL_LIB_MAC_CTRL_TX_ALIGN | SPINAL_LIB_MAC_CTRL_RX_ALIGN, base + SPINAL_LIB_MAC_CTRL);
 }
 
 
@@ -113,8 +113,9 @@ static int spinal_lib_mac_rx(struct net_device *ndev)
 {
     struct sk_buff *skb;
     struct spinal_lib_mac_priv *priv = netdev_priv(ndev);
+    void __iomem *base = priv->base;
 
-    u32 bits = spinal_lib_mac_rx_u32(priv);
+    u32 bits = spinal_lib_mac_rx_u32(base);
     u32 len = (bits-16)/8;
     u32 word_count = (bits+31)/32;
     u32 *ptr;
@@ -132,12 +133,16 @@ static int spinal_lib_mac_rx(struct net_device *ndev)
     if (!skb) {
         if (printk_ratelimit())
             printk(KERN_NOTICE "spinal_lib_mac rx: low on mem - packet dropped\n");
+
+        while(word_count--){
+            volatile u32 dummy = spinal_lib_mac_rx_u32(base);
+        }
         return NET_RX_DROP;
     }
     skb_reserve(skb, 2); /* align IP on 16B boundary */
     ptr = (u32*)(skb_put(skb, len)-2);
     while(word_count--){
-        *ptr++ = spinal_lib_mac_rx_u32(priv);
+        *ptr++ = spinal_lib_mac_rx_u32(base);
     }
 
     /* Write metadata, and then pass to the receive level */
@@ -155,7 +160,7 @@ static irqreturn_t spinal_lib_mac_interrupt(int irq, void *dev_id)
     struct net_device *ndev = dev_id;
     struct spinal_lib_mac_priv *priv = netdev_priv(ndev);
 
-    while (spinal_lib_mac_rx_pending(priv)) {
+    while (spinal_lib_mac_rx_pending(priv->base)) {
         switch(spinal_lib_mac_rx(ndev)){
         case NET_RX_DROP : priv->stats.rx_dropped++; break;
         }
@@ -170,7 +175,7 @@ static void spinal_lib_mac_timeout(struct timer_list *t)
     struct spinal_lib_mac_priv *priv = from_timer(priv, t, poll_timer);
 
     spinal_lib_mac_interrupt(0, priv->ndev);
-    mod_timer(&priv->poll_timer, get_jiffies_64() + msecs_to_jiffies(SPINAL_LIB_MAC_PULLING_PERIOD_MS));
+    mod_timer(&priv->poll_timer, jiffies + msecs_to_jiffies(SPINAL_LIB_MAC_PULLING_PERIOD_MS));
 }
 
 
@@ -186,12 +191,12 @@ int spinal_lib_mac_open(struct net_device *ndev)
 
     netif_start_queue(ndev);
 
-    spinal_lib_mac_reset_set(priv);
+    spinal_lib_mac_reset_set(priv->base);
     udelay(10);
-    spinal_lib_mac_reset_clear(priv);
+    spinal_lib_mac_reset_clear(priv->base);
 
     timer_setup(&priv->poll_timer, spinal_lib_mac_timeout, 0);
-    mod_timer(&priv->poll_timer, get_jiffies_64() + msecs_to_jiffies(SPINAL_LIB_MAC_PULLING_PERIOD_MS));
+    mod_timer(&priv->poll_timer, jiffies + msecs_to_jiffies(SPINAL_LIB_MAC_PULLING_PERIOD_MS));
 
     printk("spinal_lib_mac_open done\n");
     return 0;
@@ -238,6 +243,7 @@ int spinal_lib_mac_tx(struct sk_buff *skb, struct net_device *ndev)
     u32 bits = skb->len*8+16;
     u32 word_count = (bits+31)/32;
     u32 *ptr;
+    void __iomem *base = priv->base;
 
     /* Reject oversize packets */
     if (unlikely(skb->len > SPINAL_LIB_MAC_FRAME_SIZE_MAX)) {
@@ -247,12 +253,17 @@ int spinal_lib_mac_tx(struct sk_buff *skb, struct net_device *ndev)
     }
 
     //TODO spinal_lib_mac_tx_u32
-    while(!spinal_lib_mac_tx_ready(priv));
-    spinal_lib_mac_tx_u32(priv, bits);
+    while(!spinal_lib_mac_tx_ready(base));
+    spinal_lib_mac_tx_u32(base, bits);
     ptr = (u32*)(skb->data-2);
-    while(word_count--){
-        while(!spinal_lib_mac_tx_availability(priv));
-        spinal_lib_mac_tx_u32(priv, *ptr++);
+
+    while(word_count){
+        u32 tockens = spinal_lib_mac_tx_availability(base);
+        if(tockens > word_count) tockens = word_count;
+        word_count -= tockens;
+        while(tockens--){
+            spinal_lib_mac_tx_u32(base, *ptr++);
+        }
     }
 
 
