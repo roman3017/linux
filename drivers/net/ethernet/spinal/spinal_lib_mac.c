@@ -74,6 +74,7 @@ struct spinal_lib_mac_priv {
     struct net_device *ndev;
     struct device *dev;
 
+    int use_polling;
     struct timer_list poll_timer;
 };
 
@@ -196,8 +197,10 @@ static void spinal_lib_mac_timeout(struct timer_list *t)
 int spinal_lib_mac_open(struct net_device *ndev)
 {
     struct spinal_lib_mac_priv *priv = netdev_priv(ndev);
+    int err;
     printk("spinal_lib_mac_open\n");
     netif_carrier_on(ndev);
+
 
     netif_start_queue(ndev);
 
@@ -205,11 +208,23 @@ int spinal_lib_mac_open(struct net_device *ndev)
     udelay(10);
     spinal_lib_mac_reset_clear(priv->base);
 
-    timer_setup(&priv->poll_timer, spinal_lib_mac_timeout, 0);
-    mod_timer(&priv->poll_timer, jiffies + msecs_to_jiffies(SPINAL_LIB_MAC_PULLING_PERIOD_MS));
+    if (priv->use_polling) {
+        timer_setup(&priv->poll_timer, spinal_lib_mac_timeout, 0);
+        mod_timer(&priv->poll_timer, jiffies + msecs_to_jiffies(SPINAL_LIB_MAC_PULLING_PERIOD_MS));
+    } else {
+        err = request_irq(ndev->irq, spinal_lib_mac_interrupt, 0, ndev->name, ndev);
+        if (err) {
+            netdev_err(ndev, "failed to request irq %d\n", ndev->irq);
+            goto err_irq;
+        }
+    }
+
 
     printk("spinal_lib_mac_open done\n");
     return 0;
+err_irq:
+    netif_carrier_off(ndev);
+    return err;
 }
 
 int spinal_lib_mac_stop(struct net_device *ndev)
@@ -217,7 +232,9 @@ int spinal_lib_mac_stop(struct net_device *ndev)
     struct spinal_lib_mac_priv *priv = netdev_priv(ndev);
     printk("spinal_lib_mac_stop\n");
     del_timer_sync(&priv->poll_timer);
-
+    if (!priv->use_polling) {
+        free_irq(ndev->irq, ndev);
+    }
     netif_stop_queue(ndev); /* can't transmit any more */
     printk("spinal_lib_mac_stop done\n");
     return 0;
@@ -368,7 +385,7 @@ int spinal_lib_mac_probe(struct platform_device *pdev)
     struct spinal_lib_mac_priv *priv;
     struct resource *res;
     const char *mac_addr;
-    int err;
+    int irq, err;
 
     printk("spinal_lib_mac_probe\n");
 
@@ -380,6 +397,14 @@ int spinal_lib_mac_probe(struct platform_device *pdev)
     priv = netdev_priv(ndev);
     priv->ndev = ndev;
     priv->dev = &pdev->dev;
+
+    priv->use_polling = 0;
+    irq = platform_get_irq(pdev, 0);
+    if (irq < 0) {
+        dev_err(&pdev->dev, "Failed to get IRQ, using polling\n");
+        priv->use_polling = 1;
+        irq = 0;
+    }
 
     res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
     priv->base = devm_ioremap_resource(&pdev->dev, res);
@@ -400,6 +425,7 @@ int spinal_lib_mac_probe(struct platform_device *pdev)
 
     ndev->netdev_ops = &spinal_lib_mac_netdev_ops;
     ndev->ethtool_ops = &spinal_lib_mac_ethtool_ops;
+    ndev->irq = irq;
 //    ndev->features        |= NETIF_F_HW_CSUM; //TODO
 
 
@@ -410,7 +436,7 @@ int spinal_lib_mac_probe(struct platform_device *pdev)
         goto err;
     }
 
-    netdev_info(ndev, "mapped at %px\n", priv->base);
+    netdev_info(ndev, "irq %d, mapped at %px\n", ndev->irq, priv->base);
 
     printk("spinal_lib_mac_probe done\n");
     return 0;
