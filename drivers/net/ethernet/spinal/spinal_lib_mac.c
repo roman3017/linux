@@ -54,6 +54,7 @@
 #define SPINAL_LIB_MAC_TX   0x10
 #define SPINAL_LIB_MAC_TX_AVAILABILITY   0x14
 #define SPINAL_LIB_MAC_RX   0x20
+#define SPINAL_LIB_MAC_RX_STATS   0x2C
 
 #define SPINAL_LIB_MAC_CTRL_TX_RESET 0x00000001
 #define SPINAL_LIB_MAC_CTRL_TX_READY 0x00000002
@@ -76,6 +77,10 @@ struct spinal_lib_mac_priv {
     struct timer_list poll_timer;
 };
 
+
+static u32 spinal_lib_mac_rx_stats(void __iomem *base){
+    return readl(base + SPINAL_LIB_MAC_RX_STATS);
+}
 
 static u32 spinal_lib_mac_tx_availability(void __iomem *base){
     return readl(base + SPINAL_LIB_MAC_TX_AVAILABILITY);
@@ -107,6 +112,7 @@ static void spinal_lib_mac_reset_clear(void __iomem *base){
 
 
 
+
 //TODO spin_lock_irqsave
 
 static int spinal_lib_mac_rx(struct net_device *ndev)
@@ -135,7 +141,7 @@ static int spinal_lib_mac_rx(struct net_device *ndev)
             printk(KERN_NOTICE "spinal_lib_mac rx: low on mem - packet dropped\n");
 
         while(word_count--){
-            volatile u32 dummy = spinal_lib_mac_rx_u32(base);
+            spinal_lib_mac_rx_u32(base);
         }
         return NET_RX_DROP;
     }
@@ -159,6 +165,10 @@ static irqreturn_t spinal_lib_mac_interrupt(int irq, void *dev_id)
 {
     struct net_device *ndev = dev_id;
     struct spinal_lib_mac_priv *priv = netdev_priv(ndev);
+
+    u32 rx_stats = spinal_lib_mac_rx_stats(priv->base);
+    priv->stats.rx_errors  += (rx_stats >> 0) & 0xFF;
+    priv->stats.rx_dropped += (rx_stats >> 8) & 0xFF;
 
     while (spinal_lib_mac_rx_pending(priv->base)) {
         switch(spinal_lib_mac_rx(ndev)){
@@ -252,7 +262,6 @@ int spinal_lib_mac_tx(struct sk_buff *skb, struct net_device *ndev)
         goto drop;
     }
 
-    //TODO spinal_lib_mac_tx_u32
     while(!spinal_lib_mac_tx_ready(base));
     spinal_lib_mac_tx_u32(base, bits);
     ptr = (u32*)(skb->data-2);
@@ -266,7 +275,8 @@ int spinal_lib_mac_tx(struct sk_buff *skb, struct net_device *ndev)
         }
     }
 
-
+    priv->stats.tx_packets++;
+    priv->stats.tx_bytes += skb->len;
     dev_kfree_skb_any(skb);
 
    // printk("spinal_lib_mac_tx done\n");
