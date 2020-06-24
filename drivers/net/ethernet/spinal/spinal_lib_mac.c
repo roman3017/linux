@@ -198,7 +198,7 @@ int spinal_lib_mac_open(struct net_device *ndev)
 {
     struct spinal_lib_mac_priv *priv = netdev_priv(ndev);
     int err;
-    printk("spinal_lib_mac_open\n");
+
     netif_carrier_on(ndev);
 
 
@@ -219,8 +219,6 @@ int spinal_lib_mac_open(struct net_device *ndev)
         }
     }
 
-
-    printk("spinal_lib_mac_open done\n");
     return 0;
 err_irq:
     netif_carrier_off(ndev);
@@ -230,13 +228,11 @@ err_irq:
 int spinal_lib_mac_stop(struct net_device *ndev)
 {
     struct spinal_lib_mac_priv *priv = netdev_priv(ndev);
-    printk("spinal_lib_mac_stop\n");
     del_timer_sync(&priv->poll_timer);
     if (!priv->use_polling) {
         free_irq(ndev->irq, ndev);
     }
     netif_stop_queue(ndev); /* can't transmit any more */
-    printk("spinal_lib_mac_stop done\n");
     return 0;
 }
 
@@ -296,7 +292,6 @@ int spinal_lib_mac_tx(struct sk_buff *skb, struct net_device *ndev)
     priv->stats.tx_bytes += skb->len;
     dev_kfree_skb_any(skb);
 
-   // printk("spinal_lib_mac_tx done\n");
     return NETDEV_TX_OK;
 drop:
     dev_kfree_skb_any(skb);
@@ -387,8 +382,6 @@ int spinal_lib_mac_probe(struct platform_device *pdev)
     const char *mac_addr;
     int irq, err;
 
-    printk("spinal_lib_mac_probe\n");
-
     ndev = alloc_etherdev(sizeof(*priv));
 
     if (!ndev)
@@ -438,7 +431,6 @@ int spinal_lib_mac_probe(struct platform_device *pdev)
 
     netdev_info(ndev, "irq %d, mapped at %px\n", ndev->irq, priv->base);
 
-    printk("spinal_lib_mac_probe done\n");
     return 0;
 err:
     free_netdev(ndev);
