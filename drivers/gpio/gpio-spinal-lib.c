@@ -266,7 +266,7 @@ static int spinal_lib_gpio_probe(struct platform_device *pdev)
 		ngpio = MAX_GPIO;
 
 
-	if (ngpio >= MAX_GPIO) {
+	if (ngpio > MAX_GPIO) {
 		dev_err(dev, "too many GPIO\n");
 		return -EINVAL;
 	}
